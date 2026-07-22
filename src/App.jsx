@@ -5,7 +5,6 @@ import {
   Archive, AlertTriangle, ChevronDown, ChevronUp, ClipboardList,
   QrCode, Camera, History, Tag
 } from "lucide-react";
-import { Html5Qrcode } from "html5-qrcode";
 import qrcode from "qrcode-generator";
 import { db, CONFIGURED } from "./db.js";
 import { LETTERHEAD } from "./letterhead.js";
@@ -1586,27 +1585,44 @@ function HistoryModal({ desc, serial, records, onClose }) {
 function ScanModal({ onDetect, onClose }) {
   const [err, setErr] = useState("");
   const [manual, setManual] = useState("");
-  const scannerRef = useRef(null);
+  const videoRef = useRef(null);
   const doneRef = useRef(false);
-  const regionId = "qr-scan-region";
-
-  const safeStop = async (h) => {
-    try { if (h && h.getState && h.getState() === 2) await h.stop(); } catch (e) {}
-    try { if (h) h.clear(); } catch (e) {}
-  };
 
   useEffect(() => {
-    let cancelled = false;
-    const h = new Html5Qrcode(regionId, { verbose: false });
-    scannerRef.current = h;
-    const onOk = (decoded) => {
-      if (doneRef.current) return;
-      doneRef.current = true;
-      safeStop(h).then(() => onDetect(String(decoded).trim()));
-    };
-    h.start({ facingMode: "environment" }, { fps: 10, qrbox: 220 }, onOk, () => {})
-      .catch((e) => { if (!cancelled) setErr("Hindi mabuksan ang camera. Gamitin ang manual entry sa baba. (" + (e && e.message ? e.message : e) + ")"); });
-    return () => { cancelled = true; safeStop(scannerRef.current); };
+    let stream = null, raf = null, cancelled = false;
+    const stop = () => { if (raf) cancelAnimationFrame(raf); if (stream) stream.getTracks().forEach((t) => t.stop()); };
+
+    const supported = typeof window !== "undefined" && "BarcodeDetector" in window;
+    const secure = typeof window !== "undefined" && (window.isSecureContext || location.protocol === "https:");
+    if (!supported) { setErr("Hindi kayang mag-auto-scan ng browser na ito. I-type na lang ang serial sa baba. (Gumagana ang camera-scan sa Chrome/Android.)"); return; }
+    if (!secure) { setErr("Kailangan naka-online (HTTPS) para gumana ang camera — hal. ang Netlify link, hindi ang double-click na file. Pwede munang i-type ang serial."); return; }
+
+    (async () => {
+      try {
+        const detector = new window.BarcodeDetector({ formats: ["qr_code", "code_128", "code_39", "ean_13", "ean_8", "upc_a", "upc_e", "codabar", "itf"] });
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        if (cancelled) { stop(); return; }
+        const v = videoRef.current;
+        if (!v) return;
+        v.srcObject = stream;
+        await v.play().catch(() => {});
+        const tick = async () => {
+          if (cancelled || doneRef.current) return;
+          try {
+            const codes = await detector.detect(v);
+            if (codes && codes.length && codes[0].rawValue) {
+              doneRef.current = true; stop(); onDetect(String(codes[0].rawValue).trim()); return;
+            }
+          } catch (e) {}
+          raf = requestAnimationFrame(tick);
+        };
+        raf = requestAnimationFrame(tick);
+      } catch (e) {
+        setErr("Hindi mabuksan ang camera: " + (e && e.message ? e.message : e) + ". I-type na lang ang serial.");
+      }
+    })();
+
+    return () => { cancelled = true; stop(); };
   }, []);
 
   return (
@@ -1616,8 +1632,10 @@ function ScanModal({ onDetect, onClose }) {
           <div className="ui-eyebrow">Scan QR / barcode</div>
           <button className="ui-btn ui-btn-ghost" onClick={onClose}><X size={16} /></button>
         </div>
-        <div id={regionId} style={{ width: "100%", minHeight: 230, borderRadius: 8, overflow: "hidden", background: "#000" }} />
-        {err && <div className="text-xs mt-2" style={{ color: "var(--red)" }}>{err}</div>}
+        <div style={{ width: "100%", borderRadius: 8, overflow: "hidden", background: "#000", minHeight: err ? 0 : 220 }}>
+          {!err && <video ref={videoRef} playsInline muted style={{ width: "100%", display: "block" }} />}
+        </div>
+        {err && <div className="text-xs mt-1" style={{ color: "var(--red)" }}>{err}</div>}
         <div className="mt-3">
           <label className="ui-label">O i-type ang serial</label>
           <div className="flex gap-2">
@@ -1780,6 +1798,10 @@ export default function GatePassApp() {
     return () => window.removeEventListener("afterprint", done);
   }, []);
 
+  // items currently OUT on OTHER passes (blocks re-issuing the same serial).
+  // MUST stay above the early returns below — all hooks run every render (Rules of Hooks).
+  const outMap = useMemo(() => buildOutMap(records, draft ? draft.id : null), [records, draft]);
+
   if (!CONFIGURED) return <SetupScreen />;
 
   if (loading) {
@@ -1913,9 +1935,6 @@ export default function GatePassApp() {
       toast(flagged ? "Returned — " + flagged + " flagged para sa report" : "Returned — malinis lahat");
     } catch (e) { toast("Hindi ma-mark returned: " + (e.message || "error")); }
   };
-
-  // items currently OUT on OTHER passes (blocks re-issuing the same serial)
-  const outMap = useMemo(() => buildOutMap(records, draft.id), [records, draft.id]);
 
   const saveChip = saving ? "sine-save…" : dbError ? "may error sa koneksyon" : "naka-cloud ✓";
 
