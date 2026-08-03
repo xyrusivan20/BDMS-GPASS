@@ -3,7 +3,7 @@ import {
   Printer, Plus, Trash2, Search, Save, Copy, Pencil, Package,
   FileText, Settings, X, Check, RotateCcw, Download, Eye, Star,
   Archive, AlertTriangle, ChevronDown, ChevronUp, ClipboardList,
-  QrCode, Camera, History, Tag, Lock, LogOut, ShieldCheck, CalendarClock, Users
+  QrCode, Camera, History, Tag, Lock, LogOut, ShieldCheck, CalendarClock, Users, Upload
 } from "lucide-react";
 import qrcode from "qrcode-generator";
 import { db, auth, CONFIGURED } from "./db.js";
@@ -308,7 +308,7 @@ const CSS = `
 .pill-unit { background: #DEE7F3; color: #1D5FAF; }
 /* text overflow fixes — mahaba ang placeholder sa maliit na screen */
 .ui-input, .ui-select { text-overflow: ellipsis; min-width: 0; }
-.ui-input::placeholder { overflow: hidden; text-overflow: ellipsis; }
+.ui-input::placeholder, .ui-textarea::placeholder { color: #A79E88; opacity: 1; overflow: hidden; text-overflow: ellipsis; }
 .search-wrap { flex: 1 1 220px; min-width: 0; }
 .truncate-1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .lifebar { height: 5px; border-radius: 999px; background: #E7E1D2; overflow: hidden; margin-top: 5px; }
@@ -693,7 +693,7 @@ function EditorView({ draft, setDraft, data, onSave, onPrint, onNew, addInventor
           <div className="grid grid-cols-12 gap-3">
             <div className="col-span-12 md:col-span-7">
               <label className="ui-label">Reference / pangalan ng record</label>
-              <input className="ui-input" value={draft.label} placeholder="hal. NS - BESPREN GOODIES 12-14 JULY"
+              <input className="ui-input" value={draft.label} placeholder="Pangalan ng record"
                 onChange={(e) => set({ label: e.target.value })} />
             </div>
             <div className="col-span-12 md:col-span-5">
@@ -704,7 +704,7 @@ function EditorView({ draft, setDraft, data, onSave, onPrint, onNew, addInventor
             <div className="col-span-12">
               <label className="ui-label">Sino ang dadala (authorizes)</label>
               <input className="ui-input" value={draft.person}
-                placeholder="hal. JUAN A. DELA CRUZ, MARIA B. SANTOS, and PEDRO C. REYES"
+                placeholder="Pangalan ng magdadala"
                 onChange={(e) => set({ person: e.target.value })} />
             </div>
             <div className="col-span-12">
@@ -731,7 +731,7 @@ function EditorView({ draft, setDraft, data, onSave, onPrint, onNew, addInventor
               <div className="ui-card p-3 mb-3" style={{ background: "#F7F2E6" }}>
                 <div className="relative mb-2">
                   <Search size={15} className="absolute left-3 top-3 opacity-50" />
-                  <input className="ui-input pl-9" placeholder="Hanapin sa inventory (description o serial)…"
+                  <input className="ui-input pl-9" placeholder="Hanapin"
                     value={pickQ} onChange={(e) => setPickQ(e.target.value)} />
                 </div>
                 <div className="overflow-y-auto" style={{ maxHeight: 230 }}>
@@ -753,7 +753,7 @@ function EditorView({ draft, setDraft, data, onSave, onPrint, onNew, addInventor
             )}
 
             <div className="flex flex-wrap items-center gap-2 mb-3">
-              <input className="ui-input" style={{ maxWidth: 260 }} placeholder='Date & time out (hal. "as needed")'
+              <input className="ui-input" style={{ maxWidth: 260 }} placeholder="Date &amp; time out"
                 value={outAll} onChange={(e) => setOutAll(e.target.value)} />
               <button className="ui-btn" onClick={applyOutAll}>Ilapat sa lahat</button>
             </div>
@@ -962,7 +962,7 @@ function RecordsView({ data, onEdit, onPrint, onDuplicate, onDelete, onOpenBacku
       <div className="flex flex-wrap items-center gap-2 mb-4">
         <div className="relative search-wrap">
           <Search size={15} className="absolute left-3 top-3 opacity-50" />
-          <input className="ui-input pl-9" placeholder="Hanapin…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <input className="ui-input pl-9" placeholder="Hanapin" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
         <select className="ui-select" style={{ width: "auto" }} value={secFilter} onChange={(e) => setSecFilter(e.target.value)}>
           <option value="__all">Lahat ng section</option>
@@ -1043,10 +1043,125 @@ function RecordsView({ data, onEdit, onPrint, onDuplicate, onDelete, onOpenBacku
   );
 }
 
+
+// ------------------------------------------------------------------
+// CSV IMPORT — parser at column mapping
+// ------------------------------------------------------------------
+// Maliit pero tamang parser: kaya ang naka-quote na field, doble-quote
+// ("" = literal na "), at newline sa loob ng quotes.
+function parseCSV(text) {
+  const rows = [];
+  let row = [], cell = "", inQ = false;
+  const src = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (inQ) {
+      if (c === '"') {
+        if (src[i + 1] === '"') { cell += '"'; i++; }
+        else inQ = false;
+      } else cell += c;
+    } else if (c === '"') inQ = true;
+    else if (c === "," || c === ";" || c === "\t") { row.push(cell); cell = ""; }
+    else if (c === "\n") { row.push(cell); rows.push(row); row = []; cell = ""; }
+    else cell += c;
+  }
+  if (cell !== "" || row.length) { row.push(cell); rows.push(row); }
+  return rows.filter((r) => r.some((x) => String(x).trim() !== ""));
+}
+
+// Tinatanggap ang iba't ibang pangalan ng column (English/Tagalog, may space o wala)
+const CSV_FIELDS = [
+  { key: "desc",         label: "Description",  aliases: ["description", "desc", "article", "articles", "item", "itemdescription", "particulars", "gamit", "pangalan"] },
+  { key: "serial",       label: "Serial No.",   aliases: ["serial", "serialno", "serialnumber", "sn", "serialpropertyno"] },
+  { key: "propertyNo",   label: "Property No.", aliases: ["propertyno", "property", "propertynumber", "propno", "par", "ics"] },
+  { key: "unit",         label: "Qty/Unit",     aliases: ["qty", "quantity", "unit", "qtyunit", "dami"] },
+  { key: "section",      label: "Section",      aliases: ["section", "unitsection", "team", "division", "grupo"] },
+  { key: "category",     label: "Category",     aliases: ["category", "categorya", "kategorya", "type", "uri"] },
+  { key: "acquiredDate", label: "Petsa ng bili",aliases: ["acquired", "acquireddate", "dateacquired", "datebought", "purchasedate", "petsa", "petsangbili"] },
+  { key: "usefulLife",   label: "EUL (taon)",   aliases: ["eul", "usefullife", "usefullifeyears", "life", "lifespan", "taon"] },
+  { key: "cost",         label: "Halaga",       aliases: ["cost", "acquisitioncost", "amount", "price", "halaga", "value"] },
+  { key: "assetStatus",  label: "Kondisyon",    aliases: ["status", "assetstatus", "condition", "kondisyon"] },
+];
+
+const normHeader = (h) => String(h || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+function autoMapHeaders(headers) {
+  const map = {};
+  headers.forEach((h, i) => {
+    const n = normHeader(h);
+    if (!n) return;
+    const f = CSV_FIELDS.find((f) => f.aliases.includes(n));
+    if (f && map[f.key] == null) map[f.key] = i;
+  });
+  return map;
+}
+
+// "2021-03-15", "03/15/2021", "15 MARCH 2021" -> "2021-03-15"
+function normDate(v) {
+  const t = String(v || "").trim();
+  if (!t) return "";
+  let m = t.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (m) return m[1] + "-" + m[2].padStart(2, "0") + "-" + m[3].padStart(2, "0");
+  m = t.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+  if (m) return m[3] + "-" + m[1].padStart(2, "0") + "-" + m[2].padStart(2, "0");
+  const k = sortKeyFromDate(t);
+  if (k) return k;
+  const d = new Date(t);
+  return isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
+}
+
+function normStatus(v) {
+  const n = String(v || "").toLowerCase().replace(/[^a-z]/g, "");
+  if (!n) return "serviceable";
+  if (n.includes("unservice") || n.includes("sira")) return "unserviceable";
+  if (n.includes("repair")) return "for_repair";
+  if (n.includes("dispos")) return "disposed";
+  return "serviceable";
+}
+
+function normCategory(v) {
+  const n = String(v || "").toLowerCase().replace(/[^a-z]/g, "");
+  if (!n) return "";
+  const hit = CATEGORY_EUL.find((c) => c.id && (c.id === n || c.label.toLowerCase().replace(/[^a-z]/g, "").includes(n)));
+  if (hit) return hit.id;
+  if (n.includes("camera") || n.includes("lens")) return "camera";
+  if (n.includes("laptop") || n.includes("computer") || n.includes("pc")) return "computer";
+  if (n.includes("light")) return "lighting";
+  if (n.includes("audio") || n.includes("mic") || n.includes("sound")) return "audio";
+  if (n.includes("tripod") || n.includes("support") || n.includes("rig")) return "support";
+  if (n.includes("network") || n.includes("stream")) return "network";
+  if (n.includes("furnitur")) return "furniture";
+  return "other";
+}
+
+// ------------------------------------------------------------------
+// SHARED LAYOUT BITS
+// IMPORTANT: dapat NASA MODULE SCOPE ang mga ito. Kapag ginawa sa loob ng
+// isang component, bagong identity sila kada render -> nire-remount ng React
+// ang mga input -> nawawala ang focus kada keystroke.
+// ------------------------------------------------------------------
+function Field({ label, children, span }) {
+  return (
+    <div className={"col-span-12 " + (span || "md:col-span-3")}>
+      <label className="ui-label">{label}</label>
+      {children}
+    </div>
+  );
+}
+
+function Sec({ title, children }) {
+  return (
+    <div className="ui-card p-4 mb-4">
+      <div className="ui-eyebrow mb-3">{title}</div>
+      {children}
+    </div>
+  );
+}
+
 // ------------------------------------------------------------------
 // INVENTORY VIEW
 // ------------------------------------------------------------------
-function InventoryView({ data, addInventory, updateInventory, deleteInventory, toast, onHistory, onPrintLabels, isAdmin }) {
+export function InventoryView({ data, addInventory, updateInventory, deleteInventory, toast, onHistory, onPrintLabels, onImportCsv, isAdmin }) {
   const [q, setQ] = useState("");
   const [secFilter, setSecFilter] = useState("__all");
   const [lifeFilter, setLifeFilter] = useState("__all");
@@ -1081,13 +1196,6 @@ function InventoryView({ data, addInventory, updateInventory, deleteInventory, t
     setNu({ ...nu, desc: "", serial: "", propertyNo: "", acquiredDate: "", cost: "" });
     toast("Naidagdag sa inventory");
   };
-
-  const Field = ({ label, children, span }) => (
-    <div className={"col-span-12 " + (span || "md:col-span-3")}>
-      <label className="ui-label">{label}</label>
-      {children}
-    </div>
-  );
 
   const editor = (val, set) => (
     <div className="grid grid-cols-12 gap-2">
@@ -1149,7 +1257,7 @@ function InventoryView({ data, addInventory, updateInventory, deleteInventory, t
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <div className="relative search-wrap">
           <Search size={15} className="absolute left-3 top-3 opacity-50" />
-          <input className="ui-input pl-9" placeholder="Hanapin…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <input className="ui-input pl-9" placeholder="Hanapin" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
         <select className="ui-select" style={{ width: "auto" }} value={secFilter} onChange={(e) => setSecFilter(e.target.value)}>
           <option value="__all">Lahat ng section</option>
@@ -1161,6 +1269,7 @@ function InventoryView({ data, addInventory, updateInventory, deleteInventory, t
           <option value="beyond">Lampas EUL</option>
           <option value="nodate">Walang petsa ng bili</option>
         </select>
+        <button className="ui-btn" onClick={onImportCsv}><Upload size={15} /> Import CSV</button>
         <button className="ui-btn" onClick={() => { if (!withSerial.length) { toast("Walang item na may serial"); return; } onPrintLabels(withSerial); }}>
           <QrCode size={15} /> QR Labels
         </button>
@@ -1244,13 +1353,6 @@ function SettingsView({ s, setSettings, resetSettings, toast, isAdmin }) {
     rd.onload = () => { setSettings({ ...s, letterheadCustom: String(rd.result), letterheadMode: "custom" }); toast("Na-upload ang letterhead"); };
     rd.readAsDataURL(f);
   };
-
-  const Sec = ({ title, children }) => (
-    <div className="ui-card p-4 mb-4">
-      <div className="ui-eyebrow mb-3">{title}</div>
-      {children}
-    </div>
-  );
 
   if (!isAdmin) {
     return (
@@ -1350,7 +1452,7 @@ function SettingsView({ s, setSettings, resetSettings, toast, isAdmin }) {
         </label>
         <label className="ui-label">Prefix (optional)</label>
         <input className="ui-input ui-mono" style={{ maxWidth: 220 }} value={s.controlPrefix}
-          placeholder="hal. STII-" onChange={(e) => setS({ controlPrefix: e.target.value })} />
+          placeholder="STII-" onChange={(e) => setS({ controlPrefix: e.target.value })} />
       </Sec>
 
       <Sec title="Mga teksto ng form">
@@ -1478,7 +1580,7 @@ function BackupModal({ data, onClose, onRestore, toast }) {
           <button className="ui-btn" onClick={copy}><Copy size={15} /> Kopyahin</button>
         </div>
         <div className="ui-eyebrow mb-2">I-restore mula sa backup</div>
-        <textarea className="ui-textarea ui-mono" rows={4} placeholder="I-paste dito ang laman ng backup JSON…"
+        <textarea className="ui-textarea ui-mono" rows={4} placeholder="I-paste ang backup JSON"
           value={restoreTxt} onChange={(e) => setRestoreTxt(e.target.value)} />
         <div className="flex gap-2 mt-2">
           <button className="ui-btn ui-btn-danger" onClick={doRestore}>
@@ -1538,7 +1640,7 @@ function ReturnModal({ rec, onClose, onSubmit }) {
                   </div>
                   <div className="col-span-7">
                     <label className="ui-label">Remarks (kung may sira / incident)</label>
-                    <input className="ui-input" value={it.returnedRemarks} placeholder="hal. cracked screen, needs incident report"
+                    <input className="ui-input" value={it.returnedRemarks} placeholder="Remarks"
                       onChange={(e) => setIt(i, { returnedRemarks: e.target.value })} />
                   </div>
                 </div>
@@ -1956,7 +2058,7 @@ function ScanModal({ onDetect, onClose }) {
         <div className="mt-3">
           <label className="ui-label">O i-type ang serial</label>
           <div className="flex gap-2">
-            <input className="ui-input ui-mono" value={manual} onChange={(e) => setManual(e.target.value)} placeholder="hal. MP2QK166"
+            <input className="ui-input ui-mono" value={manual} onChange={(e) => setManual(e.target.value)} placeholder="Serial"
               onKeyDown={(e) => { if (e.key === "Enter" && manual.trim()) onDetect(manual.trim()); }} />
             <button className="ui-btn ui-btn-primary" onClick={() => manual.trim() && onDetect(manual.trim())}>OK</button>
           </div>
@@ -1982,6 +2084,179 @@ function LabelsSheet({ items }) {
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------
+// CSV IMPORT MODAL
+// ------------------------------------------------------------------
+function CsvImportModal({ existing, sections, mySection, onClose, onImport, toast }) {
+  const [rows, setRows] = useState(null);
+  const [headers, setHeaders] = useState([]);
+  const [map, setMap] = useState({});
+  const [hasHeader, setHasHeader] = useState(true);
+  const [defSection, setDefSection] = useState(mySection || sections[0] || "AV");
+  const [skipDupes, setSkipDupes] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef(null);
+
+  const readFile = (f) => {
+    if (!f) return;
+    if (f.size > 4000000) { toast("Masyadong malaki ang file (max 4MB)"); return; }
+    const rd = new FileReader();
+    rd.onload = () => {
+      const parsed = parseCSV(String(rd.result || ""));
+      if (!parsed.length) { toast("Walang laman ang file"); return; }
+      const hdr = parsed[0].map((x) => String(x).trim());
+      const looksHeader = hdr.some((h) => Object.keys(autoMapHeaders([h])).length > 0);
+      setHasHeader(looksHeader);
+      setHeaders(hdr);
+      setRows(parsed);
+      setMap(looksHeader ? autoMapHeaders(hdr) : { desc: 0, serial: 1 });
+    };
+    rd.onerror = () => toast("Hindi mabasa ang file");
+    rd.readAsText(f, "utf-8");
+  };
+
+  const dataRows = rows ? (hasHeader ? rows.slice(1) : rows) : [];
+  const cell = (r, key) => (map[key] == null ? "" : String(r[map[key]] == null ? "" : r[map[key]]).trim());
+
+  const parsedItems = useMemo(() => dataRows.map((r) => {
+    const category = normCategory(cell(r, "category"));
+    const eulRaw = cell(r, "usefulLife");
+    return {
+      desc: cell(r, "desc"),
+      serial: cell(r, "serial"),
+      propertyNo: cell(r, "propertyNo"),
+      unit: cell(r, "unit") || "1",
+      section: cell(r, "section") || defSection,
+      category,
+      acquiredDate: normDate(cell(r, "acquiredDate")),
+      usefulLife: eulRaw && !isNaN(Number(eulRaw)) ? Number(eulRaw) : eulForCategory(category),
+      cost: cell(r, "cost").replace(/[^0-9.]/g, ""),
+      assetStatus: normStatus(cell(r, "assetStatus")),
+    };
+  }), [rows, map, hasHeader, defSection]);
+
+  const existKeys = useMemo(() => new Set((existing || []).map((v) => itemKey(v)).filter(Boolean)), [existing]);
+  const valid = parsedItems.filter((it) => it.desc);
+  const noDesc = parsedItems.length - valid.length;
+  const dupes = valid.filter((it) => existKeys.has(itemKey(it)));
+  const toImport = skipDupes ? valid.filter((it) => !existKeys.has(itemKey(it))) : valid;
+
+  const template = () => {
+    const csv = "Description,Serial No.,Property No.,Qty/Unit,Section,Category,Date Acquired,EUL,Cost,Status\n" +
+      "APUTURE LS 600D PRO,AP-0001,PN-2021-001,1,AV,lighting,2021-03-15,7,45000,Serviceable\n" +
+      "SONY A7R V BODY,SN-1234,PN-2023-014,1,AV,camera,2023-06-01,5,,Serviceable\n";
+    try {
+      const blob = new Blob([csv], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = "inventory-template.csv";
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (e) { toast("Hindi ma-download ang template"); }
+  };
+
+  const go = async () => {
+    if (!toImport.length) { toast("Walang mai-import"); return; }
+    setBusy(true);
+    try { await onImport(toImport); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(27,42,58,0.6)" }}>
+      <div className="ui-card p-5 w-full overflow-y-auto" style={{ maxWidth: 720, maxHeight: "90vh" }}>
+        <div className="flex items-center justify-between mb-2">
+          <div className="ui-eyebrow">Mag-import ng inventory (CSV)</div>
+          <button className="ui-btn ui-btn-ghost" onClick={onClose}><X size={16} /></button>
+        </div>
+
+        {!rows ? (
+          <div>
+            <div className="text-sm mb-3">
+              Mula sa Excel: <b>File → Save As → CSV</b>. Ang Description lang ang talagang kailangan;
+              ang iba ay pwedeng blangko.
+            </div>
+            <input ref={fileRef} type="file" accept=".csv,text/csv,text/plain" className="text-sm"
+              onChange={(e) => readFile(e.target.files && e.target.files[0])} />
+            <div className="flex gap-2 mt-4">
+              <button className="ui-btn" onClick={template}><Download size={15} /> I-download ang template</button>
+            </div>
+          </div>
+        ) : (
+          <div>
+            <div className="flex flex-wrap items-center gap-3 mb-3">
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={hasHeader} onChange={(e) => setHasHeader(e.target.checked)} />
+                May header row
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={skipDupes} onChange={(e) => setSkipDupes(e.target.checked)} />
+                Laktawan ang doble
+              </label>
+              <div className="flex items-center gap-2 text-sm">
+                <span className="ui-label" style={{ margin: 0 }}>Default section</span>
+                <select className="ui-select" style={{ width: "auto" }} value={defSection} onChange={(e) => setDefSection(e.target.value)}>
+                  {sections.map((u) => <option key={u} value={u}>{u}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div className="ui-eyebrow mb-2">Itugma ang mga column</div>
+            <div className="grid grid-cols-12 gap-2 mb-4">
+              {CSV_FIELDS.map((f) => (
+                <div key={f.key} className="col-span-6 md:col-span-4">
+                  <label className="ui-label">{f.label}{f.key === "desc" ? " *" : ""}</label>
+                  <select className="ui-select" value={map[f.key] == null ? "" : map[f.key]}
+                    onChange={(e) => setMap({ ...map, [f.key]: e.target.value === "" ? null : Number(e.target.value) })}>
+                    <option value="">— wala —</option>
+                    {(hasHeader ? headers : headers.map((_, i) => "Column " + (i + 1))).map((h, i) => (
+                      <option key={i} value={i}>{h || "Column " + (i + 1)}</option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+
+            <div className="ui-eyebrow mb-2">Preview (unang 5)</div>
+            <div className="overflow-x-auto mb-3">
+              <table className="w-full text-xs" style={{ borderCollapse: "collapse" }}>
+                <thead><tr style={{ textAlign: "left", borderBottom: "2px solid var(--line)" }}>
+                  <th className="py-1 pr-2">Description</th><th className="py-1 pr-2">Serial</th>
+                  <th className="py-1 pr-2">Sec</th><th className="py-1 pr-2">Bili</th><th className="py-1 pr-2">EUL</th>
+                </tr></thead>
+                <tbody>
+                  {toImport.slice(0, 5).map((it, i) => (
+                    <tr key={i} style={{ borderBottom: "1px solid var(--line-soft)" }}>
+                      <td className="py-1 pr-2">{it.desc || <span style={{ color: "var(--red)" }}>(walang description)</span>}</td>
+                      <td className="py-1 pr-2 ui-mono">{it.serial}</td>
+                      <td className="py-1 pr-2">{it.section}</td>
+                      <td className="py-1 pr-2">{it.acquiredDate || "—"}</td>
+                      <td className="py-1 pr-2">{it.usefulLife}y</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="text-sm mb-3">
+              <b>{toImport.length}</b> ang mai-i-import.
+              {noDesc > 0 && <span style={{ color: "var(--red)" }}> · {noDesc} nilaktawan (walang description)</span>}
+              {dupes.length > 0 && <span style={{ color: "#8A5A12" }}> · {dupes.length} doble{skipDupes ? " (nilaktawan)" : " (isasama pa rin)"}</span>}
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button className="ui-btn ui-btn-primary" disabled={busy || !toImport.length} onClick={go}>
+                {busy ? "Ini-import…" : "I-import ang " + toImport.length}
+              </button>
+              <button className="ui-btn" onClick={() => { setRows(null); setHeaders([]); setMap({}); }}>Ibang file</button>
+              <button className="ui-btn" onClick={onClose}>Kanselahin</button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2045,7 +2320,7 @@ function PeopleView({ data, addPerson, updatePerson, deletePerson, toast, isAdmi
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <div className="relative search-wrap">
           <Search size={15} className="absolute left-3 top-3 opacity-50" />
-          <input className="ui-input pl-9" placeholder="Hanapin…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <input className="ui-input pl-9" placeholder="Hanapin" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
         <span className="ui-mono text-xs opacity-70">{list.length}/{(data.people || []).length}</span>
       </div>
@@ -2329,6 +2604,7 @@ export default function GatePassApp() {
   const [authReady, setAuthReady] = useState(!CONFIGURED);
   const [profileOpen, setProfileOpen] = useState(false);
   const [profiles, setProfiles] = useState([]);
+  const [csvOpen, setCsvOpen] = useState(false);
   const toastTimer = useRef(null);
   const settingsTimer = useRef(null);
 
@@ -2601,6 +2877,15 @@ export default function GatePassApp() {
     } catch (e) { toast("Hindi mabura (admin lang): " + (e.message || "error")); }
   };
 
+  const importCsv = async (items) => {
+    try {
+      const added = await db.bulkAddInventory(items);
+      setInventory((prev) => [...prev, ...added].sort((a, b) => (a.desc || "").toUpperCase().localeCompare((b.desc || "").toUpperCase())));
+      setCsvOpen(false);
+      toast("Na-import: " + added.length + " item" + (added.length === 1 ? "" : "s"));
+    } catch (e) { toast("Hindi ma-import: " + (e.message || "error")); }
+  };
+
   const restoreAll = async (parsed) => {
     try { await db.restore(parsed); await loadAll(); toast("Na-restore mula sa backup"); }
     catch (e) { toast("Hindi ma-restore: " + (e.message || "error")); }
@@ -2700,7 +2985,8 @@ export default function GatePassApp() {
             <InventoryView data={{ inventory, records, sections, mySection: profile ? profile.unit : "AV" }}
               addInventory={addInventory} updateInventory={updateInventory}
               deleteInventory={deleteInventory} toast={toast} isAdmin={isAdmin}
-              onHistory={(v) => setHistoryItem(v)} onPrintLabels={(items) => setPrintLabels(items)} />
+              onHistory={(v) => setHistoryItem(v)} onPrintLabels={(items) => setPrintLabels(items)}
+              onImportCsv={() => setCsvOpen(true)} />
           )}
           {tab === "people" && (
             <PeopleView data={{ people, records, profiles }} addPerson={addPerson}
@@ -2721,6 +3007,10 @@ export default function GatePassApp() {
       {historyItem && (<HistoryModal desc={historyItem.desc} serial={historyItem.serial} records={records} onClose={() => setHistoryItem(null)} />)}
       {returnRec && (<ReturnModal rec={returnRec} onClose={() => setReturnRec(null)} onSubmit={(payload) => handleMarkReturned(returnRec, payload)} />)}
       {backupOpen && (<BackupModal data={{ settings: s, records, inventory, people }} onClose={() => setBackupOpen(false)} onRestore={restoreAll} toast={toast} />)}
+      {csvOpen && (
+        <CsvImportModal existing={inventory} sections={sections} mySection={profile ? profile.unit : "AV"}
+          onClose={() => setCsvOpen(false)} onImport={importCsv} toast={toast} />
+      )}
       {profileOpen && profile && (
         <ProfileModal profile={profile} email={session ? session.user.email : ""} sections={sections}
           onClose={() => setProfileOpen(false)}
