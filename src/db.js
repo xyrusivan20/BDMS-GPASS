@@ -170,6 +170,17 @@ export const db = {
     if (error) throw error;
     return rowToInv(data);
   },
+  async bulkAddInventory(items) {
+    const rows = items.map((it) => invToRow(it));
+    const out = [];
+    // hatiin sa batches para hindi mag-timeout sa malaking file
+    for (let i = 0; i < rows.length; i += 100) {
+      const { data, error } = await supabase.from("inventory").insert(rows.slice(i, i + 100)).select();
+      if (error) throw error;
+      (data || []).forEach((d) => out.push(rowToInv(d)));
+    }
+    return out;
+  },
   async updateInventory(id, patch) {
     const { data, error } = await supabase.from("inventory").update(invToRow(patch, true)).eq("id", id).select().single();
     if (error) throw error;
